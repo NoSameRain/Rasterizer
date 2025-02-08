@@ -108,4 +108,8 @@ public:
         y /= length;
         z /= length;
     }
+
+    const float* getV() const {
+        return v;
+    }
 };

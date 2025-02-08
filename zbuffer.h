@@ -1,12 +1,15 @@
-#pragma once
+﻿#pragma once
 #include <concepts>
 
 // Zbuffer class for managing depth values during rendering.
 // This class is template-constrained to only work with floating-point types (`float` or `double`).
 
+
 template<std::floating_point T> // Restricts T to be a floating-point type
 class Zbuffer {
-    T* buffer;                  // Pointer to the buffer storing depth values
+    T* buffer;
+
+    // Pointer to the buffer storing depth values
     unsigned int width, height; // Dimensions of the Z-buffer
 
 public:
@@ -56,3 +59,4 @@ public:
         delete[] buffer; // Free the allocated memory
     }
 };
+//#endif

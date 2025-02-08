@@ -1,11 +1,15 @@
-#include <iostream>
+﻿#include <iostream>
 #define _USE_MATH_DEFINES
+//#define USE_SIMD
+//#define USE_THREAD
 #include <cmath>
 
 #include "GamesEngineeringBase.h" // Include the GamesEngineeringBase header
 #include <algorithm>
 #include <chrono>
-
+#include <unordered_map>
+#include <thread>
+#include <mutex>
 #include <cmath>
 #include "matrix.h"
 #include "colour.h"
@@ -22,7 +26,72 @@
 // - mesh: Pointer to the Mesh object containing vertices and triangles to render.
 // - camera: Matrix representing the camera's transformation.
 // - L: Light object representing the lighting parameters.
+
+
+const int num_thread = 8; // number of triangles each thread process
+std::mutex zbuffer_mutex;
+
+void processTriangleBatch(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L, int start, int end) {
+    // Combine perspective, camera, and world transformations for the mesh
+    matrix p = renderer.perspective * camera * mesh->world;
+
+    // Iterate through all triangles in the mesh
+    //for (triIndices& ind : mesh->triangles) {
+    for (unsigned int j = start; j < end; j++) {
+        Vertex t[3]; // Temporary array to store transformed triangle vertices
+
+        // Transform each vertex of the triangle
+        for (unsigned int i = 0; i < 3; i++) {
+            t[i].p = p * mesh->vertices[mesh->triangles[j].v[i]].p; // Apply transformations
+            t[i].p.divideW(); // Perspective division to normalize coordinates
+
+            // Transform normals into world space for accurate lighting
+            // no need for perspective correction as no shearing or non-uniform scaling
+            t[i].normal = mesh->world * mesh->vertices[mesh->triangles[j].v[i]].normal;
+            t[i].normal.normalise();
+
+            // Map normalized device coordinates to screen space
+            t[i].p[0] = (t[i].p[0] + 1.f) * 0.5f * static_cast<float>(renderer.canvas.getWidth());
+            t[i].p[1] = (t[i].p[1] + 1.f) * 0.5f * static_cast<float>(renderer.canvas.getHeight());
+            t[i].p[1] = renderer.canvas.getHeight() - t[i].p[1]; // Invert y-axis
+
+            // Copy vertex colours
+            t[i].rgb = mesh->vertices[mesh->triangles[j].v[i]].rgb;
+        }
+
+        // Clip triangles with Z-values outside [-1, 1]
+        if (fabs(t[0].p[2]) > 1.0f || fabs(t[1].p[2]) > 1.0f || fabs(t[2].p[2]) > 1.0f) continue;
+
+        // Create a triangle object and render it
+        triangle tri(t[0], t[1], t[2]);
+        {
+            // protect z-buffer
+            std::lock_guard<std::mutex> lock(zbuffer_mutex);
+            tri.draw(renderer, L, mesh->ka, mesh->kd);
+        }
+    }
+}
+
+void renderParallel(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
+    int num_triangles = mesh->triangles.size();
+    std::vector<std::thread> threads;
+    int batchSize = num_triangles / num_thread; 
+
+    for (int i = 0; i < num_thread; i++) {
+        int start = i * batchSize;
+        int end = (i == num_thread - 1) ? num_triangles : (start + batchSize);
+        threads.emplace_back(processTriangleBatch, std::ref(renderer), mesh, std::ref(camera), std::ref(L), start, end);
+    }
+
+    for (auto& t : threads) {
+        t.join(); 
+    }
+}
+
 void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
+#ifdef USE_THREAD
+    renderParallel(renderer, mesh, camera, L);
+#else
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
 
@@ -37,7 +106,7 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 
             // Transform normals into world space for accurate lighting
             // no need for perspective correction as no shearing or non-uniform scaling
-            t[i].normal = mesh->world * mesh->vertices[ind.v[i]].normal; 
+            t[i].normal = mesh->world * mesh->vertices[ind.v[i]].normal;
             t[i].normal.normalise();
 
             // Map normalized device coordinates to screen space
@@ -56,6 +125,7 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
         triangle tri(t[0], t[1], t[2]);
         tri.draw(renderer, L, mesh->ka, mesh->kd);
     }
+#endif
 }
 
 // Test scene function to demonstrate rendering with user-controlled transformations
@@ -123,6 +193,12 @@ matrix makeRandomRotation() {
     }
 }
 
+void renderMeshParallel(Renderer& renderer, std::vector<Mesh*>& scene, matrix& camera, Light& L, int start, int end) {
+    for (unsigned int j = start; j < end; j++) {
+        render(renderer, scene[j], camera, L);
+    }
+}
+
 // Function to render a scene with multiple objects and dynamic transformations
 // No input variables
 void scene1() {
@@ -171,13 +247,28 @@ void scene1() {
             step *= -1.f;
             if (++cycle % 2 == 0) {
                 end = std::chrono::high_resolution_clock::now();
-                std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                std::cout << std::chrono::duration<double, std::milli>(end - start).count() << "\n";
                 start = std::chrono::high_resolution_clock::now();
             }
         }
 
         for (auto& m : scene)
             render(renderer, m, camera, L);
+
+        //int num_meshes = scene.size();
+        //std::vector<std::thread> threads;
+        //int batchSize = num_meshes / num_thread;
+
+        //for (int i = 0; i < num_thread; i++) {
+        //    int start = i * batchSize;
+        //    int end = (i == num_thread - 1) ? num_meshes : (start + batchSize);
+        //    threads.emplace_back(renderMeshParallel, std::ref(renderer), std::ref(scene), std::ref(camera), std::ref(L), start, end);
+        //}
+        //for (auto& t : threads) {
+        //    t.join();
+        //}
+
         renderer.present();
     }
 
@@ -239,7 +330,8 @@ void scene2() {
             sphereStep *= -1.f;
             if (++cycle % 2 == 0) {
                 end = std::chrono::high_resolution_clock::now();
-                std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                std::cout << std::chrono::duration<double, std::milli>(end - start).count() << "\n";
                 start = std::chrono::high_resolution_clock::now();
             }
         }
@@ -248,6 +340,20 @@ void scene2() {
 
         for (auto& m : scene)
             render(renderer, m, camera, L);
+
+        //int num_meshes = scene.size();
+        //std::vector<std::thread> threads;
+        //int batchSize = num_meshes / num_thread;
+
+        //for (int i = 0; i < num_thread; i++) {
+        //    int start = i * batchSize;
+        //    int end = (i == num_thread - 1) ? num_meshes : (start + batchSize);
+        //    threads.emplace_back(renderMeshParallel, std::ref(renderer), std::ref(scene), std::ref(camera), std::ref(L), start, end);
+        //}
+        //for (auto& t : threads) {
+        //    t.join();
+        //}
+
         renderer.present();
     }
 
@@ -255,12 +361,97 @@ void scene2() {
         delete m;
 }
 
+void scene3() {
+    Renderer renderer;
+    matrix camera = matrix::makeIdentity();
+    Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.1f, 0.1f, 0.1f) };
+
+    std::vector<Mesh*> scene;
+
+    struct rRot { float x; float y; float z; }; // Structure to store random rotation parameters
+    std::vector<rRot> rotations;
+
+    RandomNumberGenerator& rng = RandomNumberGenerator::getInstance();
+
+    // Create a grid of cubes with random rotations
+    for (unsigned int y = 0; y < 6; y++) {
+        for (unsigned int x = 0; x < 8; x++) 
+            for (unsigned int z = 0; z < 4; z++) {
+                Mesh* m = new Mesh();
+                *m = Mesh::makeSphere(1.0f, 10, 20);
+                scene.push_back(m);
+                m->world = matrix::makeTranslation(-7.0f + (static_cast<float>(x) * 2.f), 5.0f - (static_cast<float>(y) * 2.f), -8.f - static_cast<float>(z));
+                rRot r{ rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f), rng.getRandomFloat(-.1f, .1f) };
+                rotations.push_back(r);
+        }
+    }
+
+    // Create a sphere and add it to the scene
+    Mesh* sphere = new Mesh();
+    *sphere = Mesh::makeSphere(1.0f, 10, 20);
+    scene.push_back(sphere);
+    float sphereOffset = -6.f;
+    float sphereStep = 0.1f;
+    sphere->world = matrix::makeTranslation(sphereOffset, 0.f, -6.f);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    std::chrono::time_point<std::chrono::high_resolution_clock> end;
+    int cycle = 0;
+
+    bool running = true;
+    while (running) {
+        renderer.canvas.checkInput();
+        renderer.clear();
+
+        // Rotate each cube in the grid
+        for (unsigned int i = 0; i < rotations.size(); i++)
+            scene[i]->world = scene[i]->world * matrix::makeRotateXYZ(rotations[i].x, rotations[i].y, rotations[i].z);
+
+        // Move the sphere back and forth
+        sphereOffset += sphereStep;
+        sphere->world = matrix::makeTranslation(sphereOffset, 0.f, -6.f);
+        if (sphereOffset > 6.0f || sphereOffset < -6.0f) {
+            sphereStep *= -1.f;
+            if (++cycle % 2 == 0) {
+                end = std::chrono::high_resolution_clock::now();
+                //std::cout << cycle / 2 << " :" << std::chrono::duration<double, std::milli>(end - start).count() << "ms\n";
+                std::cout << std::chrono::duration<double, std::milli>(end - start).count() << "\n";
+                start = std::chrono::high_resolution_clock::now();
+            }
+        }
+
+        if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
+
+        for (auto& m : scene)
+            render(renderer, m, camera, L);
+
+        //int num_meshes = scene.size();
+        //std::vector<std::thread> threads;
+        //int batchSize = num_meshes / num_thread;
+
+        //for (int i = 0; i < num_thread; i++) {
+        //    int start = i * batchSize;
+        //    int end = (i == num_thread - 1) ? num_meshes : (start + batchSize);
+        //    threads.emplace_back(renderMeshParallel, std::ref(renderer), std::ref(scene), std::ref(camera), std::ref(L), start, end);
+        //}
+        //for (auto& t : threads) {
+        //    t.join();
+        //}
+        renderer.present();
+    }
+
+    for (auto& m : scene)
+        delete m;
+}
+
+
 // Entry point of the application
 // No input variables
 int main() {
     // Uncomment the desired scene function to run
     //scene1();
     scene2();
+    //scene3();
     //sceneTest(); 
     
 

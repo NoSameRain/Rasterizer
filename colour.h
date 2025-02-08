@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 // The `colour` class represents an RGB colour with floating-point precision.
 // It provides various utilities for manipulating and converting colours.
@@ -31,6 +32,13 @@ public:
     // - _g: Green component
     // - _b: Blue component
     void set(float _r, float _g, float _b) { r = _r, g = _g, b = _b; }
+    //void setR(float _r) { r = _r; }
+    //void setG(float _g) { g = _g; }
+    //void setB(float _b) { b = _b; }
+
+    const float getR()const { return r; }
+    const float getG()const { return g; }
+    const float getB()const { return b; }
 
     // Accesses the specified component of the colour by index.
     // Input Variables:

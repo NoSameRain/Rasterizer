@@ -1,5 +1,6 @@
-#pragma once
-
+﻿#pragma once
+//#define USE_SIMD
+//#define USE_THREAD
 #include "mesh.h"
 #include "colour.h"
 #include "renderer.h"
@@ -96,6 +97,10 @@ public:
     // - renderer: Renderer object for drawing
     // - L: Light object for shading calculations
     // - ka, kd: Ambient and diffuse lighting coefficients
+
+    const int num_threads = 8;
+
+
     void draw(Renderer& renderer, Light& L, float ka, float kd) {
         vec2D minV, maxV;
 
@@ -104,6 +109,7 @@ public:
 
         // Skip very small triangles
         if (area < 1.f) return;
+
 
         // Iterate over the bounding box and check each pixel
         for (int y = (int)(minV.y); y < (int)ceil(maxV.y); y++) {
@@ -134,6 +140,8 @@ public:
                 }
             }
         }
+
+
     }
 
     // Compute the 2D bounds of the triangle
