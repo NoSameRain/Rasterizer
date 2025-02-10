@@ -1,5 +1,5 @@
 ﻿#pragma once
-//#define USE_SIMD
+#define USE_SIMD_M
 
 #include <iostream>
 #include <vector>
@@ -12,6 +12,7 @@ class alignas(16) matrix {
     union {
         float m[4][4]; // 2D array representation of the matrix
         float a[16];   // 1D array representation of the matrix for linear access
+        __m128 row[4];  // store row of matrix by 4 SIMD vectors
     };
 
 public:
@@ -36,33 +37,32 @@ public:
     // Input Variables:
     // - v: vec4 object to multiply with the matrix
     // Returns the resulting transformed vec4
-    //vec4 operator * (const vec4& v) const {
-    //    vec4 result;
-    //    result[0] = a[0] * v[0] + a[1] * v[1] + a[2] * v[2] + a[3] * v[3];
-    //    result[1] = a[4] * v[0] + a[5] * v[1] + a[6] * v[2] + a[7] * v[3];
-    //    result[2] = a[8] * v[0] + a[9] * v[1] + a[10] * v[2] + a[11] * v[3];
-    //    result[3] = a[12] * v[0] + a[13] * v[1] + a[14] * v[2] + a[15] * v[3];
-    //    return result;
-    //}
     vec4 operator * (const vec4& v) const {
     vec4 result;
-    #ifdef USE_SIMD
-        __m128 vec = _mm_loadu_ps(v.getV()); // 加载向量到 SIMD 寄存器
+    #ifdef USE_SIMD_M
+        // load vector4
+        __m128 vec = _mm_loadu_ps(v.getV()); 
 
-        
-        for (int i = 0; i < 4; ++i) {
-            __m128 row = _mm_loadu_ps(&a[i * 4]); // 加载矩阵的一行
-            __m128 mul = _mm_mul_ps(row, vec);   // 按元素相乘
-            result[i] = _mm_cvtss_f32(_mm_hadd_ps(_mm_hadd_ps(mul, mul), mul)); // 水平加法
-        }
-        return result;
+        // load 4 rows of matrix in register
+        __m128 row0 = _mm_loadu_ps(&a[0]);
+        __m128 row1 = _mm_loadu_ps(&a[4]);
+        __m128 row2 = _mm_loadu_ps(&a[8]);
+        __m128 row3 = _mm_loadu_ps(&a[12]);
+        // do dot product of each row with vector
+        __m128 res0 = _mm_dp_ps(row0, vec, 0xF1);
+        __m128 res1 = _mm_dp_ps(row1, vec, 0xF1);
+        __m128 res2 = _mm_dp_ps(row2, vec, 0xF1);
+        __m128 res3 = _mm_dp_ps(row3, vec, 0xF1);
+        // store result to Vec4
+        _mm_store_ps(result.v, _mm_set_ps(_mm_cvtss_f32(res3), _mm_cvtss_f32(res2), _mm_cvtss_f32(res1),_mm_cvtss_f32(res0)));
     #else
         result[0] = a[0] * v[0] + a[1] * v[1] + a[2] * v[2] + a[3] * v[3];
         result[1] = a[4] * v[0] + a[5] * v[1] + a[6] * v[2] + a[7] * v[3];
         result[2] = a[8] * v[0] + a[9] * v[1] + a[10] * v[2] + a[11] * v[3];
         result[3] = a[12] * v[0] + a[13] * v[1] + a[14] * v[2] + a[15] * v[3];
-        return result;
+        
     #endif
+        return result;
     }
 
 
@@ -71,36 +71,26 @@ public:
     // Input Variables:
     // - mx: Another matrix to multiply with
     // Returns the resulting matrix
-    // 
-    //matrix operator * (const matrix& mx) const {
-    //    matrix ret;
-    //    for (int row = 0; row < 4; ++row) {
-    //        for (int col = 0; col < 4; ++col) {
-    //            ret.a[row * 4 + col] =
-    //                a[row * 4 + 0] * mx.a[0 * 4 + col] +
-    //                a[row * 4 + 1] * mx.a[1 * 4 + col] +
-    //                a[row * 4 + 2] * mx.a[2 * 4 + col] +
-    //                a[row * 4 + 3] * mx.a[3 * 4 + col];
-    //        }
-    //    }
-    //    return ret;
-    //}
     matrix operator * (const matrix& mx) const {
-    matrix ret;
-    #ifdef USE_SIMD   
-        for (int row = 0; row < 4; ++row) {
-            __m128 rowVec = _mm_loadu_ps(&a[row * 4]); // 加载当前矩阵的一行
+        matrix ret;
+    #ifdef USE_SIMD_M   
+        alignas(16) float row_values[4];
 
-            // 按列计算点积并存储结果
-            for (int col = 0; col < 4; ++col) {
-                __m128 colVec = _mm_set_ps(mx.a[12 + col], mx.a[8 + col], mx.a[4 + col], mx.a[col]);
-                __m128 mul = _mm_mul_ps(rowVec, colVec);   // 按元素相乘
-                __m128 sum = _mm_hadd_ps(mul, mul);        // 水平加法
-                sum = _mm_hadd_ps(sum, sum);              // 再次水平加法
-                ret.a[row * 4 + col] = _mm_cvtss_f32(sum); // 提取标量结果
-            }
+        for (int i = 0; i < 4; i++) {
+            _mm_store_ps(row_values, row[i]); // store i_th row of matrix
+            // dot product
+            ret.row[i] = _mm_add_ps(
+                _mm_add_ps(
+                    _mm_mul_ps(_mm_set1_ps(row_values[0]), mx.row[0]), // [i][0]*mx[0][j]
+                    _mm_mul_ps(_mm_set1_ps(row_values[1]), mx.row[1]) // [i][1]*mx[1][j]
+                ),
+                _mm_add_ps(
+                    _mm_mul_ps(_mm_set1_ps(row_values[2]), mx.row[2]), // [i][2]*mx[2][j]
+                    _mm_mul_ps(_mm_set1_ps(row_values[3]), mx.row[3]) // [i][3]*mx[3][j]
+                )
+            );
         }
-        return ret;
+        
     #else
         for (int row = 0; row < 4; ++row) {
             for (int col = 0; col < 4; ++col) {
@@ -111,9 +101,9 @@ public:
                     a[row * 4 + 3] * mx.a[3 * 4 + col];
             }
         }
-        return ret;
-    #endif
 
+    #endif
+        return ret;
     }
 
 
@@ -234,15 +224,8 @@ private:
     }
 
     // Set the matrix as an identity matrix
-    //void identity() {
-    //    for (int i = 0; i < 4; ++i) {
-    //        for (int j = 0; j < 4; ++j) {
-    //            m[i][j] = (i == j) ? 1.0f : 0.0f;
-    //        }
-    //    }
-    //}
     void identity() {
-    #ifdef USE_SIMD  
+    #ifdef USE_SIMD_M  
         __m128 zero = _mm_setzero_ps();   
 
         _mm_storeu_ps(&a[0], zero); 
